@@ -33,6 +33,7 @@
 #!csharp
 
 using System.Threading;
+using System.Diagnostics;
 //
 // Вычисление определенного интеграла
 //
@@ -90,12 +91,61 @@ class DefiniteIntegral
 
 #r "nuget: xunit, 2.8.1"
 
+// Setup a custom formatter to display plots as images
 using Xunit;
 
-var X = (double x) => x;
 var SIN = (double x) => Math.Sin(x);
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
+long [] Optimal_Time = new long [12]; // Ox
+int [] Threads = Enumerable.Range(1,12).Select(x => x*1).ToArray<int>(); // Oy
 
-Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+double step = 1e-4;
+
+Stopwatch stopWatch = new Stopwatch(); // создание таймера
+
+for(int i = 0; i < 5; i++)
+{
+    Console.WriteLine(i);
+    for(int threads = 1; threads <= 12; threads++)
+    {
+        try
+        {
+            stopWatch.Reset();
+            stopWatch.Start();
+            Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, step , threads), 1e-4);
+            stopWatch.Stop();
+            Optimal_Time[threads-1] = i == 0 ? stopWatch.Elapsed.Ticks : (Optimal_Time[threads-1]+stopWatch.Elapsed.Ticks)/2; // вычисление среднего значения для каждого из потоков
+        }
+        catch(Xunit.Sdk.EqualException){Console.WriteLine($"Calculation error from {threads} number of threads"); break;}
+        
+
+    }
+}
+
+#!csharp
+
+//#r "nuget:ScottPlot, 5.0.*"
+// Setup a custom formatter to display plots as images
+using Microsoft.DotNet.Interactive.Formatting;
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+//Console.WriteLine(Optimal_Time[11]); данная строка присутствует для вывода точного кол-ва тиков для любого из кол-ва потоков
+
+ScottPlot.Plot plt = new(); // создание нового графика
+plt.Add.Scatter(Optimal_Time, Threads); 
+plt
+
+#!markdown
+
+Summary
+
+Минимальный размер шага 1е-4 (для 1е-1, 1е-2 и 1е-3 срабатывает блок catch).
+
+Для точности 1е-4: Многопоточная система: 7 потоков и 232163 тика; Однопоточная система: 339869 тиков => около 47% прирост времени для однопоточной.
+
+Для точности 1e-5: Многопоточная система: 7 потоков и 2107660 тиков; Однопоточная система: 3006981 тиков => около 43% прирост времени для однопоточной.
+
+Для точности 1е-6: Многопоточная система: 12 потоков и 18790346 тиков; Однопоточная система: 30243855 тиков => около 61% прирост времени для однопоточной.
+
+** В качестве однопоточной системы использовал метод класса TrapezoidalRule, который был написан во 2-ом семесте в одном из заданий по предмету "Практикум по программированию".
