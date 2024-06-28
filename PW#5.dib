@@ -30,7 +30,12 @@
 
 #r "nuget: xunit, 2.8.1"
 using System.Threading;
+using System.Collections.Concurrent;
 using Xunit;
+
+static int counter = 0;
+static int number = 0;
+static int usingResource = 0;
 
 class Message
 {
@@ -55,12 +60,70 @@ class Message
 
 #!csharp
 
-using System.Collections.Concurrent;
+static void UseResource(BlockingCollection<Message> queue_from, BlockingCollection<Message> queue_to) 
+{
+    if (0 == Interlocked.Exchange(ref usingResource, 1))
+    {
+        Message current = queue_from.Take();
+        current.Handle();
+        Interlocked.Increment(ref number);
+        if (queue_to.IsAddingCompleted)
+        {
+            queue_from.CompleteAdding();
+            Interlocked.Exchange(ref usingResource, 0);
+            Interlocked.Increment(ref counter);
+            return;
+        }
+        else 
+        {
+            queue_to.Add(new Message());
+        }
+        if (number == 199) 
+        { 
+            queue_from.CompleteAdding(); 
+            Interlocked.Increment(ref counter); 
+            Interlocked.Exchange(ref usingResource, 0); 
+            return; 
+        }
+        else 
+        {
+            Interlocked.Exchange(ref usingResource, 0);
+        }
+    }
+}
+
+#!csharp
 
 var queue1 = new BlockingCollection<Message>(2); //очередь первого потока
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
-// Здесь писать решение
+queue1.Add(new Message());
+//Producer
+Thread producer = new Thread(() =>
+{
+    while (!queue1.IsAddingCompleted)
+    {
+        if (queue2.Count == 0) 
+        {
+            UseResource(queue1, queue2);
+        }
+    }
+});
+// Consumer
+Thread consumer = new Thread(() =>
+{
+    while (!queue1.IsAddingCompleted || queue2.Count != 0)
+    {
+        if (queue1.Count == 0) 
+        {
+            UseResource(queue2, queue1);
+        }
+    }
+});
+producer.Start(); 
+consumer.Start();
+while (counter != 2) { }
+Message.Check();
 
 #!csharp
 
