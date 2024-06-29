@@ -1,0 +1,250 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №6. Изучение производительности потоко-безопасных очередей.
+
+**Цель:** Определить лучшую потоко-безопасную коллекцию для выполнения интенсивной обработки входящих сообщений.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Назвать оптимальную коллекцию для обработки большого количества сообщений.
+2. Изучите примтив синхронизации Условная переманная.
+
+
+**Материалы для самостоятельного изучения**.
+1. [Потоко-безопасные коллекции](https://learn.microsoft.com/en-us/dotnet/standard/collections/thread-safe/)
+2. Условные переменные Глава 5 п.5.1. книги Г. Эндрюс Основы многопоточного, параллельного и распределенного программирования
+3. [Одна из реализаций условных переменных на .Net](https://learn.microsoft.com/ru-ru/dotnet/api/system.threading.manualresetevent?view=net-8.0)
+
+## Задание.
+Исслдеовать производительность BlockingCollection и ConcurrentQueue в сравнении с непотокоабезопасной очередью.
+
+Для каждой потоко-безопасной очереди необходимо реализовать 2 потока: один записывает объект в очередь, а другой - читает объект из очереди.
+Для непотокобезопасной очереди реализовать два цикла - записи миллиона объектов в очередь и чтение миллиона объектов из очереди.
+
+Необходимо определить два промежутка времени:
+- время за которое поток или цикл обработает миллион объектов
+- время, необходимое на запись и чтение миллиона объектов из очреди.
+
+Сделать десять замеров по каждой коллекции. Все замеры показать на графике.
+
+Записать в ноутбуке вывод - какая и потоко-безопасных коллекций эффективнее. И выразить в процентах - скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очредью.
+
+**Указание**.
+1. Необходимо исключить из замеров время, необходимое для запуска и остановки потоков, то есть посчитать чистое время, необходимое для обработки объектов.
+Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
+2. Для итогового вывода сравнивать усредненные значения.
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+
+#!csharp
+
+class Message
+{
+    static int messageHandled = 0;
+    int id;
+    public Message()
+    {
+        id = Thread.CurrentThread.ManagedThreadId;
+    }
+
+    public void Handle()
+    {
+        Interlocked.Increment(ref messageHandled);
+        if (id == Thread.CurrentThread.ManagedThreadId) { throw new Exception(); }
+    }
+
+    public static void Check()
+    {
+        if (200 != messageHandled) { throw new Exception(); }
+    }
+}
+
+#!csharp
+
+static ManualResetEvent[] waitHandles = new ManualResetEvent[]
+{
+new ManualResetEvent(false),
+new ManualResetEvent(false),
+new ManualResetEvent(false),
+};
+
+double[] time = new double[10];
+int[] nums = Enumerable.Range(1,10).Select(num => num).ToArray<int>();
+for (int i = 0; i < 10; i++)
+{
+    bool cond = false;
+    ConcurrentQueue<Message> cq = new ConcurrentQueue<Message>();
+    Thread Producer = new Thread(() =>
+    {
+        waitHandles[0].WaitOne();
+
+        for (int j = 0; j < 1e6; j++)
+        {
+            cq.Enqueue(new Message());
+        }
+        cond = true;
+        waitHandles[1].Set();
+    });
+    Thread Consumer = new Thread(() =>
+    {
+        waitHandles[0].WaitOne();
+        while (cq.Count > 0 || cond == false)
+        {
+            Message current = new Message();
+            cq.TryDequeue(out current);
+        }
+        waitHandles[2].Set();
+    });
+    Producer.Start();
+    Consumer.Start();
+    waitHandles[0].Set();
+    DateTime dt = DateTime.Now;
+    WaitHandle.WaitAll(waitHandles);
+    time[i] = (DateTime.Now - dt).TotalMilliseconds;
+    waitHandles[0] = new ManualResetEvent(false);
+    waitHandles[1] = new ManualResetEvent(false);
+    waitHandles[2] = new ManualResetEvent(false);
+}
+Console.WriteLine($"Average for ConcurrentQueue = {time.Average()}");
+
+#!csharp
+
+//#r "nuget:ScottPlot, 5.0.*"
+using Microsoft.DotNet.Interactive.Formatting;
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(nums, time); 
+plt.Save("ConcurrentQueue.png", 400, 300);
+plt
+
+#!csharp
+
+waitHandles[0] = new ManualResetEvent(false);
+waitHandles[1] = new ManualResetEvent(false);
+waitHandles[2] = new ManualResetEvent(false);
+
+for (int i = 0; i < 10; i++) 
+{
+    bool cond = false;
+    BlockingCollection<Message> bc = new BlockingCollection<Message>();
+    Thread Producer = new Thread(() =>
+    {
+        waitHandles[0].WaitOne();
+
+        for (int j = 0; j < 1e6; j++)
+        {
+            bc.Add(new Message());
+        }
+        cond = true;
+        waitHandles[1].Set();
+    });
+    Thread Consumer = new Thread(() =>
+    {
+        waitHandles[0].WaitOne();
+        while (bc.Count > 0 || cond == false)
+        {
+            Message current = new Message();
+            current = bc.Take();
+        }
+        waitHandles[2].Set();
+    });
+    Producer.Start();
+    Consumer.Start();
+    waitHandles[0].Set();
+    DateTime dt = DateTime.Now;
+    WaitHandle.WaitAll(waitHandles);
+    time[i] = (DateTime.Now - dt).TotalMilliseconds;
+    waitHandles[0] = new ManualResetEvent(false);
+    waitHandles[1] = new ManualResetEvent(false);
+    waitHandles[2] = new ManualResetEvent(false);
+}
+Console.WriteLine($"Average for BlockingCollection = {time.Average()}");
+
+#!csharp
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(nums, time);
+plt.Save("BlockingCollection.png", 400, 300); 
+plt
+
+#!csharp
+
+for(int i = 0; i< 10; i++)
+{
+    Queue<Message> queue = new Queue<Message>();
+    Stopwatch sw = new Stopwatch();
+    sw.Start();
+    for (int j = 0; j < 1e6; j++) 
+    {
+        queue.Enqueue(new Message());   
+    }
+    sw.Stop();
+    long first_period = sw.ElapsedMilliseconds;
+    sw.Restart();
+    for (int j = 0; j < 1e6; j++) 
+    {
+        Message current = new Message();
+        current = queue.Dequeue();
+    }
+    sw.Stop();
+    time[i] = first_period + sw.ElapsedMilliseconds;
+}
+Console.WriteLine($"Average for Queue = {time.Average()}");
+
+#!csharp
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(nums, time);
+plt.Save("Queue.png", 400, 300); 
+plt
+
+#!markdown
+
+## Вывод
+
+#!markdown
+
+Для обычной очереди:
+
+65,4 миллисекунды среднее значение по 10-ти тестам:
+
+#!markdown
+
+![Queue](Queue1.png)
+
+#!markdown
+
+Для Blocking collection:
+
+236,99124 миллисекунды среднее значение по 10-ти тестам:
+
+#!markdown
+
+![BlockingCollection](BlockingCollection1.png)
+
+#!markdown
+
+Для Concurrent Queue:
+
+53,53886 миллисекунды среднее значение по 10-ти тестам:
+
+#!markdown
+
+![ConcurrentQueue](ConcurrentQueue1.png)
+
+#!markdown
+
+Коллекция Concurrent Queue оказалась самой эффективной потокобезопасной коллекцией с результатом 53,53886 миллисекунды, который на 18% эффективнее по сравнению с обычной очередью! 
