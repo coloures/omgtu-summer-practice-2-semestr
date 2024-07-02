@@ -27,6 +27,7 @@ public interface ICommand
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Collections.Concurrent;
 class ServerThread : ICommand
 {
     public int name_of_thread = Thread.CurrentThread.GetHashCode();
@@ -40,10 +41,10 @@ class ServerThread : ICommand
     protected bool condition_to_carry_on = true;
     public bool Condition_to_carry_on { get { return condition_to_carry_on; }  }
 
-    protected Queue<ICommand> commands;
+    protected ConcurrentQueue<ICommand> commands;
     public ServerThread()
     {
-        commands = new Queue<ICommand>();
+        commands = new ConcurrentQueue<ICommand>();
     }
     public void AddCommand(ICommand command) { commands.Enqueue(command); }
     public void Execute()
@@ -53,19 +54,19 @@ class ServerThread : ICommand
         Console.WriteLine(Thread.CurrentThread.Name + " started its work");
         while (condition_to_carry_on)
         {
-            try
-            {
-                Console.WriteLine($"{commands.Count} - кол-во команд");
-                command = commands.Dequeue();
-                command.Execute();
-                Process();
-
-            }
-            catch (InvalidOperationException)
-            {
-                if (soft_exception == true)
+            Console.WriteLine($"{commands.Count} - кол-во команд");
+            try{
+                if(commands.TryDequeue(out command))
                 {
-                    condition_to_carry_on = false;
+                    command.Execute();
+                    Process();      
+                }
+                else
+                {
+                    if (soft_exception == true)
+                    {
+                        condition_to_carry_on = false;
+                    }
                 }
             }
             catch (Exception)
