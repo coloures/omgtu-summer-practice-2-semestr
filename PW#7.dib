@@ -30,6 +30,9 @@ using System.Threading;
 using System.Collections.Concurrent;
 class ServerThread : ICommand
 {
+    protected bool mistake = false;
+    public bool Mistake { get { return mistake; } }
+
     public int name_of_thread = Thread.CurrentThread.GetHashCode();
 
     protected volatile bool hard_condition = false;
@@ -69,8 +72,12 @@ class ServerThread : ICommand
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                if (ex.Message.Contains("wrong thread")) 
+                {
+                    mistake = true;
+                }
                 break;
             }
         }
@@ -149,7 +156,11 @@ class Checker
 {
     public static void Checking(ServerThread program) 
     {
-        if (program.Soft_exception == true)
+        if(program.Mistake == true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread}has been ended by your mistake");
+        }
+        else if (program.Soft_exception == true && program.Hard_condition != true)
         {
             Console.WriteLine($"Server thread of {program.name_of_thread }has been ended softly");
         }
@@ -163,10 +174,12 @@ class Checker
 #!csharp
 
 ServerThread program = new ServerThread();
+ServerThread program1 = new ServerThread();
+
 program.AddCommand(new HardStop(program));
 program.AddCommand(new SoftStop(program));
 program.AddCommand(new SoftStop(program));
-ServerThread program1 = new ServerThread();
+
 program1.AddCommand(new SoftStop(program1));
 program1.AddCommand(new SoftStop(program1));
 Thread myThread = new Thread(new ThreadStart(program.Execute));
