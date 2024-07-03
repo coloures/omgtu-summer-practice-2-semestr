@@ -35,12 +35,277 @@
 
 #!csharp
 
+using System;
+using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Threading;
+
+#!csharp
+
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
+public interface ILongRunningCommand : ICommand
+{
+    int executions { get; }
+    bool IsCompleted { get; }
+}
+
+#!csharp
+
 public interface IScheduler
 {
-    bool HasCommand()
+    bool HasCommand();
     ICommand Select();
     void Add(ICommand cmd);
 }
+
+#!csharp
+
+public class Scheduler : IScheduler
+{
+    private ConcurrentQueue<ICommand> commandQueue = new ConcurrentQueue<ICommand>();
+    private List<ILongRunningCommand> longRunningCommands = new List<ILongRunningCommand>();
+
+    public bool HasCommand()
+    {
+        return commandQueue.Count > 0;
+    }
+    public bool HasHardCommand() // иначе поток заканчивается до проработки всей сложной задачи.
+    {
+        foreach (ILongRunningCommand cmd in longRunningCommands) 
+        {
+            if (!cmd.IsCompleted) { return true; }
+        }
+        return false;
+    }
+
+    public ICommand Select() // может быть и null!!!!
+    {
+        ICommand command;
+        commandQueue.TryDequeue(out command);
+        return command;
+    }
+
+    public void Add(ICommand cmd)
+    {
+        if (cmd is ILongRunningCommand longRunningCmd)
+        {
+            longRunningCommands.Add(longRunningCmd);
+        }
+        else
+        {
+            commandQueue.Enqueue(cmd);
+        }
+    }
+
+    public void ExecuteLongRunningCommands()
+    {
+        foreach (var longRunningCmd in longRunningCommands)
+        {
+            if (!longRunningCmd.IsCompleted)
+            {
+                longRunningCmd.Execute();
+            }
+        }
+    }
+}
+
+#!csharp
+
+class HardWork : ILongRunningCommand 
+{
+    protected int Executions;
+    public int executions 
+    {
+        get { return Executions; }
+    }
+    protected bool ISCompleted = false;
+    public bool IsCompleted {
+        get { return ISCompleted; } 
+    }
+    public HardWork(int executions)
+    {
+        Executions = executions;
+    }
+    public void Execute() 
+    {
+        Console.WriteLine($"Making WORK");
+        if (Executions > 1)
+        {
+            Executions--;
+        }
+        else 
+        {
+            Executions = 0;
+            ISCompleted = true;
+        }
+    }
+}
+
+#!csharp
+
+class ServerThread : ICommand
+{
+    public int name_of_thread = Thread.CurrentThread.GetHashCode();
+
+    protected volatile bool hard_condition = false;
+    public bool Hard_condition { get { return hard_condition; } }
+
+    protected volatile bool soft_exception = false;
+    public bool Soft_exception { get { return soft_exception; } }
+
+    protected bool condition_to_carry_on = true;
+    public bool Condition_to_carry_on { get { return condition_to_carry_on; } }
+
+    protected Scheduler commands;
+    public ServerThread()
+    {
+        commands = new Scheduler();
+    }
+    public void AddCommand(ICommand command) { commands.Add(command); }
+    public void Execute()
+    {
+        name_of_thread = Thread.CurrentThread.GetHashCode();
+        ICommand command;
+        Console.WriteLine(Thread.CurrentThread.Name + " started its work");
+        while (condition_to_carry_on)
+        {
+            try
+            {
+                if (commands.HasCommand() || commands.HasHardCommand())
+                {
+                    command = commands.Select();
+                    if (command != null) command.Execute();
+                    Process();
+                    commands.ExecuteLongRunningCommands();
+                }
+                else
+                {
+                    if (soft_exception == true)
+                    {
+                        condition_to_carry_on = false;
+                    }
+                }
+
+            }
+            catch (Exception)
+            {
+                break;
+            }
+        }
+    }
+    public void Stop()
+    {
+        condition_to_carry_on = false;
+    }
+    protected void Process()
+    {
+        Console.WriteLine($"{Thread.CurrentThread.Name} processes");
+        Thread.Sleep(1000);
+    }
+    public void HardStop()
+    {
+        hard_condition = true;
+    }
+    public void SoftStop()
+    {
+        soft_exception = true;
+    }
+
+}
+
+#!csharp
+
+class HardStop : ICommand
+{
+    protected Exception exception = new Exception("Hardstop execution is running in wrong thread!");
+    ServerThread st;
+    public HardStop(ServerThread st)
+    {
+        this.st = st;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread.GetHashCode() == st.name_of_thread)
+        {
+            st.HardStop();
+            throw new Exception($"{Thread.CurrentThread.Name} has ended its work hardly!");
+        }
+        else
+        {
+            throw exception;
+        }
+    }
+}
+
+#!csharp
+
+class SoftStop : ICommand
+{
+    protected Exception exception = new Exception("SoftStop execution is running in wrong thread!");
+    ServerThread st;
+    public SoftStop(ServerThread st)
+    {
+        this.st = st;
+    }
+    public void Execute()
+    {
+        if (Thread.CurrentThread.GetHashCode() == st.name_of_thread)
+        {
+            st.SoftStop();
+        }
+        else
+        {
+            throw exception;
+        }
+    }
+}
+
+#!csharp
+
+class Checker
+{
+    public static void Checking(ServerThread program)
+    {
+        if (program.Soft_exception == true && program.Hard_condition != true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread}has been ended softly");
+        }
+        else if (program.Hard_condition == true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread}has been ended hardly");
+        }
+    }
+}
+
+#!csharp
+
+ServerThread program = new ServerThread();
+program.AddCommand(new HardStop(program));
+program.AddCommand(new SoftStop(program));
+program.AddCommand(new SoftStop(program));
+ServerThread program1 = new ServerThread();
+program1.AddCommand(new SoftStop(program1));
+program1.AddCommand(new SoftStop(program1));
+program1.AddCommand(new SoftStop(program1));
+program1.AddCommand(new HardStop(program));
+program1.AddCommand(new HardWork(5));
+Thread myThread = new Thread(new ThreadStart(program.Execute));
+myThread.Name = "first thread";
+myThread.Start();
+Thread myThread1 = new Thread(new ThreadStart(program1.Execute));
+myThread1.Name = "second thread";
+myThread1.Start();
+myThread.Join();
+myThread1.Join();
+Checker.Checking(program); // program отключается с помощью hard stop
+Checker.Checking(program1); // program1 отключается с помощью soft stop
 
 #!markdown
 
