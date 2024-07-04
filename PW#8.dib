@@ -69,19 +69,11 @@ public interface IScheduler
 public class Scheduler : IScheduler
 {
     private ConcurrentQueue<ICommand> commandQueue = new ConcurrentQueue<ICommand>();
-    private List<ILongRunningCommand> longRunningCommands = new List<ILongRunningCommand>();
+    private ConcurrentQueue<ILongRunningCommand> longRunningCommands = new ConcurrentQueue<ILongRunningCommand>();
 
     public bool HasCommand()
     {
-        return commandQueue.Count > 0;
-    }
-    public bool HasHardCommand() // иначе поток заканчивается до проработки всей сложной задачи.
-    {
-        foreach (ILongRunningCommand cmd in longRunningCommands) 
-        {
-            if (!cmd.IsCompleted) { return true; }
-        }
-        return false;
+        return commandQueue.Count > 0 || !longRunningCommands.IsEmpty;
     }
 
     public ICommand Select() // может быть и null!!!!
@@ -95,7 +87,7 @@ public class Scheduler : IScheduler
     {
         if (cmd is ILongRunningCommand longRunningCmd)
         {
-            longRunningCommands.Add(longRunningCmd);
+            longRunningCommands.Enqueue(longRunningCmd);
         }
         else
         {
@@ -105,11 +97,13 @@ public class Scheduler : IScheduler
 
     public void ExecuteLongRunningCommands()
     {
-        foreach (var longRunningCmd in longRunningCommands)
+        ILongRunningCommand lrc;
+        if(longRunningCommands.TryDequeue(out lrc))
         {
-            if (!longRunningCmd.IsCompleted)
+            lrc.Execute();
+            if(lrc.IsCompleted != true)
             {
-                longRunningCmd.Execute();
+                longRunningCommands.Enqueue(lrc);
             }
         }
     }
@@ -178,7 +172,7 @@ class ServerThread : ICommand
         {
             try
             {
-                if (commands.HasCommand() || commands.HasHardCommand())
+                if (commands.HasCommand())
                 {
                     command = commands.Select();
                     if (command != null) command.Execute();
