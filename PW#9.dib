@@ -1,0 +1,335 @@
+#!meta
+
+{"kernelInfo":{"defaultKernelName":"csharp","items":[{"aliases":[],"languageName":"csharp","name":"csharp"}]}}
+
+#!markdown
+
+# Практическая работа №9. Реализация длительных операций.
+
+**Цель:** Предоставить возможность выполннеия команд, для полного завершения которых требуется более одного вызова Execute.
+
+**Результаты:** После выполнения работы Вы сможете:
+1. Выполнять длительные опреации в отдельном потоке без монопольного использования потока в течение длительного времени.
+3. Прерывать выполнение таких команд. 
+
+
+## Задание.
+Если для полного выполнения командв потребуется более одного вызова Execute, необходимо такую команду добавить в планировщик.
+
+Для иллюстрации выполнненой работы определить команду
+
+#!csharp
+
+using System;
+using System.Collections.Generic;
+using System.Collections.Concurrent;
+using System.Threading;
+
+#!csharp
+
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
+public interface ILongRunningCommand : ICommand
+{
+    int executions { get; }
+    bool IsCompleted { get; }
+}
+
+#!csharp
+
+public class TestCommand(int id) : ICommand
+{
+    int counter = 0;
+
+    public void Execute()
+    {
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+    }
+}
+
+#!csharp
+
+public class TestLongCommand : ILongRunningCommand
+{
+    public int id {get; private set;}
+    public int executions {get; private set;}
+    public bool IsCompleted { get; private set; }
+    int counter = 0;
+
+    public TestLongCommand(int Id, int Executions)
+    {
+        id = Id;
+        executions = Executions;
+        IsCompleted = false;
+    }
+
+    public void Execute()
+    {
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+        if(counter == executions)
+        {
+            IsCompleted = true;
+        }
+    }
+}
+
+#!csharp
+
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+public class Scheduler : IScheduler
+{
+    private ConcurrentQueue<ICommand> commandQueue = new ConcurrentQueue<ICommand>();
+    private ConcurrentQueue<ILongRunningCommand> longRunningCommands = new ConcurrentQueue<ILongRunningCommand>();
+
+    public bool HasCommand()
+    {
+        return (commandQueue.Count > 0 || !longRunningCommands.IsEmpty);
+    }
+
+    public ICommand Select() // может быть и null!!!!
+    {
+        ICommand command;
+        commandQueue.TryDequeue(out command);
+        return command;
+    }
+
+    public void Add(ICommand cmd)
+    {
+        if (cmd is ILongRunningCommand longRunningCmd)
+        {
+            longRunningCommands.Enqueue(longRunningCmd);
+        }
+        else
+        {
+            commandQueue.Enqueue(cmd);
+        }
+    }
+
+    public void ExecuteLongRunningCommands()
+    {
+        ILongRunningCommand lrc;
+        if(longRunningCommands.TryDequeue(out lrc))
+        {
+            lrc.Execute();
+            if(lrc.IsCompleted != true)
+            {
+                longRunningCommands.Enqueue(lrc);
+            }
+        }
+    }
+}
+
+#!csharp
+
+class HardWork : ILongRunningCommand 
+{
+    protected int Executions;
+    public int executions 
+    {
+        get { return Executions; }
+    }
+    protected bool ISCompleted = false;
+    public bool IsCompleted {
+        get { return ISCompleted; } 
+    }
+    public HardWork(int executions)
+    {
+        Executions = executions;
+    }
+    public void Execute() 
+    {
+        Console.WriteLine($"Making WORK");
+        if (Executions > 1)
+        {
+            Executions--;
+        }
+        else 
+        {
+            Executions = 0;
+            ISCompleted = true;
+        }
+    }
+}
+
+#!csharp
+
+public class ServerThread : ICommand
+{
+    public bool mistake = false;
+    public int name_of_thread = Thread.CurrentThread.GetHashCode();
+
+    protected volatile bool hard_condition = false;
+    public bool Hard_condition { get { return hard_condition; } }
+
+    protected volatile bool soft_exception = false;
+    public bool Soft_exception { get { return soft_exception; } }
+
+    protected bool condition_to_carry_on = true;
+    public bool Condition_to_carry_on { get { return condition_to_carry_on; } }
+
+    protected Scheduler commands;
+    public bool HasCommands()
+    {
+        return commands.HasCommand();
+    }
+    public ServerThread()
+    {
+        commands = new Scheduler();
+    }
+    public void AddCommand(ICommand command) { commands.Add(command); }
+    public void Execute()
+    {
+        name_of_thread = Thread.CurrentThread.GetHashCode();
+        ICommand command;
+        Console.WriteLine(Thread.CurrentThread.Name + " started its work");
+        while (condition_to_carry_on)
+        {
+            try
+            {
+                if (commands.HasCommand())
+                {
+                    command = commands.Select();
+                    if (command != null) command.Execute();
+                    Process();
+                    commands.ExecuteLongRunningCommands();
+                }
+                else
+                {
+                    if (soft_exception == true)
+                    {
+                        condition_to_carry_on = false;
+                    }
+                }
+
+            }
+            catch (Exception ex)
+            {
+                if (ex.Message.Contains("wrong thread")) 
+                {
+                    mistake = true;
+                }
+                Console.WriteLine (ex.Message);
+                break;
+            }
+        }
+    }
+    public void Stop()
+    {
+        condition_to_carry_on = false;
+    }
+    protected void Process()
+    {
+        Console.WriteLine($"{Thread.CurrentThread.Name} processes");
+        Thread.Sleep(10);
+    }
+    public void HardStop()
+    {
+        hard_condition = true;
+    }
+    public void SoftStop()
+    {
+        soft_exception = true;
+    }
+
+}
+
+#!csharp
+
+class HardStop : ICommand
+{
+    protected Exception exception = new Exception("Hardstop execution is running in wrong thread!");
+    ServerThread st;
+    public HardStop(ServerThread st)
+    {
+        this.st = st;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread.GetHashCode() == st.name_of_thread)
+        {
+            st.HardStop();
+            throw new Exception($"{Thread.CurrentThread.Name} has ended its work hardly!");
+        }
+        else
+        {
+            throw exception;
+        }
+    }
+}
+
+#!csharp
+
+class SoftStop : ICommand
+{
+    protected Exception exception = new Exception("SoftStop execution is running in wrong thread!");
+    ServerThread st;
+    public SoftStop(ServerThread st)
+    {
+        this.st = st;
+    }
+    public void Execute()
+    {
+        if (Thread.CurrentThread.GetHashCode() == st.name_of_thread)
+        {
+            st.SoftStop();
+        }
+        else
+        {
+            throw exception;
+        }
+    }
+}
+
+#!csharp
+
+class Checker
+{
+    public static void Checking(ServerThread program)
+    {
+        if (program.mistake == true) 
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread}has been ended by mistake");
+        }
+        else if (program.Soft_exception == true && program.Hard_condition != true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread}has been ended softly");
+        }
+        else if (program.Hard_condition == true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread}has been ended hardly");
+        }
+    }
+}
+
+#!csharp
+
+ServerThread program = new ServerThread();
+program.AddCommand(new TestLongCommand(1,3));
+program.AddCommand(new TestLongCommand(2,3));
+program.AddCommand(new TestLongCommand(3,3));
+program.AddCommand(new TestLongCommand(4,3));
+program.AddCommand(new TestLongCommand(5,3));
+Thread myThread = new Thread(new ThreadStart(program.Execute));
+myThread.Name = "first thread";
+myThread.Start();
+while(program.HasCommands()){}
+program.AddCommand(new HardStop(program));
+Checker.Checking(program); // program отключается с помощью hard stop
+
+#!markdown
+
+Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
