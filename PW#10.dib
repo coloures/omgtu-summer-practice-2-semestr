@@ -36,3 +36,373 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+
+#!csharp
+
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
+public interface ILongRunningCommand : ICommand
+{
+    int executions { get; }
+    bool IsCompleted { get; }
+}
+
+#!csharp
+
+public class TestLongCommand : ILongRunningCommand
+{
+    public int id { get; private set; }
+    public int executions { get; private set; }
+    public bool IsCompleted { get; private set; }
+    public ConcurrentQueue<string> messages;
+
+    public TestLongCommand(int Id, int Executions = 1)
+    {
+        id = Id;
+        executions = Executions;
+        messages = new ConcurrentQueue<string>();
+        IsCompleted = false;
+    }
+    public void Complete()
+    {
+        IsCompleted = true;
+    }
+    public void Execute()
+    {
+        string message;
+        if (messages.TryDequeue(out message))
+        {
+            executions++;
+            Console.ForegroundColor = ConsoleColor.DarkRed;
+            Console.WriteLine(message);
+            Console.ResetColor();
+        }
+    }
+    public void Add(string message)
+    {
+        messages.Enqueue(message);
+    }
+    public void Look_at()
+    {
+        foreach (var message in messages) { Console.WriteLine(message); }
+    }
+}
+
+#!csharp
+
+public class Router : ILongRunningCommand
+{
+    public int executions { get; }
+    public bool isCompleted { get; private set; }
+    public bool IsCompleted { get; }
+    public Dictionary<int, TestLongCommand> routes;
+    Queue<KeyValuePair<int, string>> source;
+    public Router(List<TestLongCommand> longCommands, Queue<KeyValuePair<int, string>> source)
+    {
+        routes = new Dictionary<int, TestLongCommand>();
+        foreach (TestLongCommand tlc in longCommands)
+        {
+            routes.Add(tlc.id, tlc);
+        }
+        this.source = source;
+        isCompleted = false;
+    }
+    public void Execute()
+    {
+        if (source.Count > 0)
+        {
+            try
+            {
+                KeyValuePair<int, string> current = source.Dequeue();
+                routes[current.Key].Add(current.Value);
+                return;
+            }
+            catch (Exception) { Console.WriteLine("Wrong id!"); }
+        }
+        isCompleted = true;
+    }
+    public void Add(TestLongCommand tlc) 
+    {
+        routes.Add(tlc.id, tlc);
+    }
+    public void Remove(TestLongCommand tlc) 
+    {
+        routes.Remove(tlc.id);
+    }
+}
+
+#!csharp
+
+public interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+public class Scheduler : IScheduler
+{
+    public bool router_cond = false;
+    private ConcurrentQueue<ICommand> commandQueue = new ConcurrentQueue<ICommand>();
+    public ConcurrentQueue<ILongRunningCommand> longRunningCommands = new ConcurrentQueue<ILongRunningCommand>();
+
+    public bool HasCommand()
+    {
+        return !longRunningCommands.IsEmpty || commandQueue.Count > 0;
+    }
+
+    public ICommand Select() // может быть и null!!!!
+    {
+        ICommand command;
+        commandQueue.TryDequeue(out command);
+        return command;
+    }
+
+    public void Add(ICommand cmd)
+    {
+        if (cmd is ILongRunningCommand longRunningCmd)
+        {
+            longRunningCommands.Enqueue(longRunningCmd);
+        }
+        else
+        {
+            commandQueue.Enqueue(cmd);
+        }
+    }
+
+    public TestLongCommand ExecuteLongRunningCommands()
+    {
+        ILongRunningCommand lrc;
+        if (longRunningCommands.TryDequeue(out lrc))
+        {
+            if (lrc is TestLongCommand)
+            {
+                TestLongCommand t = lrc as TestLongCommand;
+                t.Execute();
+                if ( router_cond != true || !t.messages.IsEmpty)
+                {
+                    longRunningCommands.Enqueue(t);
+                    return null;
+                }
+                return t;
+            }
+        }
+        return null;
+    }
+}
+
+#!csharp
+
+public class ServerThread : ICommand
+{
+    public bool mistake = false;
+    public int name_of_thread = Thread.CurrentThread.GetHashCode();
+
+    protected volatile bool hard_condition = false;
+    public bool Hard_condition { get { return hard_condition; } }
+
+    protected volatile bool soft_exception = false;
+    public bool Soft_exception { get { return soft_exception; } }
+
+    protected bool condition_to_carry_on = true;
+    public bool Condition_to_carry_on { get { return condition_to_carry_on; } }
+
+    protected Scheduler commands;
+    public Router router;
+    public bool HasCommands()
+    {
+        return commands.HasCommand();
+    }
+    public ServerThread(Queue<KeyValuePair<int, string>> source)
+    {
+        commands = new Scheduler();
+        List<ILongRunningCommand> lrc = commands.longRunningCommands.ToList();
+        List<TestLongCommand> testLongCommands = new List<TestLongCommand>();
+        foreach (ILongRunningCommand longRunningCommand in lrc) 
+        {
+            if (longRunningCommand is TestLongCommand tlc) 
+            {
+                testLongCommands.Add(tlc);
+            }
+        }
+        router = new Router(testLongCommands, source);
+    }
+    public void AddCommand(ICommand command) 
+    { 
+        commands.Add(command);
+        if (command is TestLongCommand tlc) 
+        {
+            router.Add(tlc);
+        }
+    }
+    public void Router_Execute() 
+    {
+        router.Execute();
+        commands.router_cond = router.isCompleted;
+    }
+    public void Execute()
+    {
+        name_of_thread = Thread.CurrentThread.GetHashCode();
+        ICommand command;
+        Console.WriteLine(Thread.CurrentThread.Name + " started its work");
+        while (condition_to_carry_on)
+        {
+            try
+            {
+                if (commands.HasCommand())
+                {
+                    command = commands.Select();
+                    if (command != null) command.Execute();
+                    TestLongCommand current = commands.ExecuteLongRunningCommands();
+                    if (current != null) 
+                    {
+                        router.Remove(current);
+                    }
+                }
+                else
+                {
+                    if (soft_exception == true)
+                    {
+                        condition_to_carry_on = false;
+                    }
+                }
+
+            }
+            catch (Exception ex)
+            {
+                if (ex.Message.Contains("wrong thread"))
+                {
+                    mistake = true;
+                }
+                Console.WriteLine(ex.Message);
+                break;
+            }
+        }
+    }
+    public void Stop()
+    {
+        condition_to_carry_on = false;
+    }
+    protected void Process()
+    {
+        Console.WriteLine($"{Thread.CurrentThread.Name} processes");
+        Thread.Sleep(150);
+    }
+    public void HardStop()
+    {
+        hard_condition = true;
+    }
+    public void SoftStop()
+    {
+        soft_exception = true;
+    }
+
+}
+
+#!csharp
+
+class HardStop : ICommand
+{
+    protected Exception exception = new Exception("Hardstop execution is running in wrong thread!");
+    ServerThread st;
+    public HardStop(ServerThread st)
+    {
+        this.st = st;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread.GetHashCode() == st.name_of_thread)
+        {
+            st.HardStop();
+            throw new Exception($"{Thread.CurrentThread.Name} has ended its work hardly!");
+        }
+        else
+        {
+            throw exception;
+        }
+    }
+}
+
+#!csharp
+
+class SoftStop : ICommand
+{
+    protected Exception exception = new Exception("SoftStop execution is running in wrong thread!");
+    ServerThread st;
+    public SoftStop(ServerThread st)
+    {
+        this.st = st;
+    }
+    public void Execute()
+    {
+        if (Thread.CurrentThread.GetHashCode() == st.name_of_thread)
+        {
+            st.SoftStop();
+        }
+        else
+        {
+            throw exception;
+        }
+    }
+}
+
+#!csharp
+
+class Checker
+{
+    public static void Checking(ServerThread program)
+    {
+        if (program.mistake == true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread} has been ended by mistake");
+        }
+        else if (program.Soft_exception == true && program.Hard_condition != true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread} has been ended softly");
+        }
+        else if (program.Hard_condition == true)
+        {
+            Console.WriteLine($"Server thread of {program.name_of_thread} has been ended hardly");
+        }
+    }
+}
+
+#!csharp
+
+Queue<KeyValuePair<int, string>> queue = new Queue<KeyValuePair<int, string>>();
+queue.Enqueue(new KeyValuePair<int, string>(1, "This message was sent to first command"));
+queue.Enqueue(new KeyValuePair<int, string>(2, "This message was sent to second command"));
+queue.Enqueue(new KeyValuePair<int, string>(1, "This is for the first again"));
+queue.Enqueue(new KeyValuePair<int, string>(1, "And this for first"));
+queue.Enqueue(new KeyValuePair<int, string>(2, "Finally for second!"));
+queue.Enqueue(new KeyValuePair<int, string>(3, "To end up let's send to third!!!"));
+ServerThread program = new ServerThread(queue);
+TestLongCommand first = new TestLongCommand(1, 3);
+TestLongCommand second = new TestLongCommand(2, 3);
+program.AddCommand(first);
+program.AddCommand(second);
+Thread myThread = new Thread(new ThreadStart(program.Execute));
+myThread.Name = "first thread";
+myThread.Start();
+program.AddCommand(new TestLongCommand(3, 3));
+program.AddCommand(new SoftStop(program));
+while (program.HasCommands()) { program.Router_Execute(); }
+myThread.Join();
+Console.WriteLine("Quantity of testlongcommands: " + program.router.routes.Count); // длительные команды убираются после выполнения
+Checker.Checking(program); // program отключается с помощью soft stop
